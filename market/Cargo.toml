@@ -1,0 +1,17 @@
+[package]
+name = "prediction-market"
+version = "0.1.0"
+authors = ["Marko Bosnic <bosnic@protonmail.com>"]
+edition = "2018"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+uint = { version = "0.9.0", default-features = false }
+near-sdk = "3.1.0"
+near-contract-standards = "3.1.0"
+
+[dev-dependencies]
+near-sdk-sim = "3.1.0"
+test-token = { path = "../test-token" }
