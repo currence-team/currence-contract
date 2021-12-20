@@ -59,6 +59,7 @@ pub struct Market {
     pub resolution_time: Timestamp,
 
     pub outcomes: Vector<Outcome>,
+    pub liquidity: f64,
     /// Number of outstanding shares per outcome
     pub shares: Vec<f64>,
     /// Payout weights. For a valid market, weights must sum to 1 of the
@@ -103,6 +104,7 @@ pub struct CreateMarketArgs {
     pub trade_fee_bps: u16,
 
     pub outcomes: Vec<Outcome>,
+    pub liquidity: Option<f64>,
 
     pub fee_owner: Option<AccountId>,
     pub operator: Option<AccountId>,
@@ -144,6 +146,10 @@ impl Market {
             deposited_collateral: 0,
             minimum_deposit: MINIMUM_DEPOSIT * (10 as u128).pow(args.collateral_decimals),
 
+            liquidity: match args.liquidity {
+                None => DEFAULT_LIQUIDITY,
+                Some(l) => l,
+            },
             trade_fee_bps: args.trade_fee_bps,
             fees_accrued: 0,
             volume: 0,
@@ -184,10 +190,10 @@ impl Market {
         base_price.checked_add(fee).unwrap()
     }
 
-    pub fn calculate_prices(&self) -> Vec<u128> {
-        return lmsr::compute_price(50.0, &self.shares)
+    pub fn calculate_prices(&self) -> Vec<f64> {
+        return lmsr::compute_price(self.liquidity, &self.shares)
             .iter()
-            .map(|x| x.ceil() as u128)
+            .map(|x| (x * 100.0))
             .collect();
     }
 
@@ -203,7 +209,7 @@ impl Market {
         };
         // e.g. 5.2493 (average 0.52 per share for uninitialized market)
         let estimate = lmsr::estimate(
-            50.0,
+            self.liquidity,
             &self.shares,
             outcome_id.try_into().unwrap(),
             multiplier * (num_shares as f64),

@@ -32,7 +32,7 @@ pub struct OutcomeView {
     pub id: OutcomeId,
     pub short_name: String,
     pub long_name: String,
-    pub price: u128,
+    pub price: f64,
 }
 
 #[derive(Serialize, Deserialize)]
