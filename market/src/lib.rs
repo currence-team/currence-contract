@@ -12,6 +12,7 @@ mod lmsr;
 mod market;
 mod storage_impl;
 mod token_receiver;
+mod views;
 
 #[near_bindgen]
 #[derive(BorshDeserialize, BorshSerialize)]
@@ -67,11 +68,18 @@ impl Contract {
         // TODO(cqsd): wait for merge
         // let expected_payout_vec_sum: u128 = 10u128.pow(market.collateral_decimals);
         // use this as the match guard
+
+        let outcome_id = payouts
+            .iter()
+            .enumerate()
+            .max_by(|(_, value0), (_, value1)| value0.cmp(value1))
+            .map(|(idx, _)| idx)
+            .unwrap() as u32;
         match payouts.iter().sum::<u128>() {
             s if (s == market.collateral_decimals as u128) => {
                 // usual case, resolve the market
                 market.payouts = Some(payouts);
-                market.stage = Stage::Finalized(Finalization::Resolved);
+                market.stage = Stage::Finalized(Finalization::Resolved { outcome_id });
             }
             0 => {
                 // no payouts --> the outcomes were invalid, put market in refund mode

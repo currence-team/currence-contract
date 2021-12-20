@@ -12,7 +12,8 @@ use crate::lmsr;
 
 pub type Timestamp = u64;
 
-#[derive(Debug, PartialEq, BorshDeserialize, BorshSerialize)]
+#[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub enum Stage {
     /// The market has never been opened.
     Pending,
@@ -24,9 +25,10 @@ pub enum Stage {
     Finalized(Finalization),
 }
 
-#[derive(Debug, PartialEq, BorshDeserialize, BorshSerialize)]
+#[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub enum Finalization {
-    Resolved,
+    Resolved { outcome_id: OutcomeId },
     Invalid,
 }
 
@@ -180,6 +182,13 @@ impl Market {
         let base_price = self.calc_price_without_fee(outcome_id, num_shares, OrderDirection::Sell);
         let fee = self.calc_fee(base_price);
         base_price.checked_add(fee).unwrap()
+    }
+
+    pub fn calculate_prices(&self) -> Vec<u128> {
+        return lmsr::compute_price(50.0, &self.shares)
+            .iter()
+            .map(|x| x.ceil() as u128)
+            .collect();
     }
 
     pub fn calc_price_without_fee(
@@ -401,9 +410,9 @@ impl Market {
     }
 
     fn assert_finalized(&self) {
-        self.assert_stages(&[
-            Stage::Finalized(Finalization::Resolved),
-            Stage::Finalized(Finalization::Invalid),
-        ])
+        assert!(match &self.stage {
+            Stage::Finalized(_) => true,
+            _ => false,
+        });
     }
 }
