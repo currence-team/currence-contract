@@ -1,7 +1,7 @@
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::collections::Vector;
 use near_sdk::json_types::U128;
-use near_sdk::{env, near_bindgen, AccountId, Balance, Promise, PromiseOrValue};
+use near_sdk::{env, log, near_bindgen, serde_json, AccountId, Balance, Promise, PromiseOrValue};
 
 use crate::market::*;
 
@@ -12,6 +12,7 @@ mod lmsr;
 mod market;
 mod storage_impl;
 mod token_receiver;
+mod views;
 
 #[near_bindgen]
 #[derive(BorshDeserialize, BorshSerialize)]
@@ -67,11 +68,18 @@ impl Contract {
         // TODO(cqsd): wait for merge
         // let expected_payout_vec_sum: u128 = 10u128.pow(market.collateral_decimals);
         // use this as the match guard
+
+        let outcome_id = payouts
+            .iter()
+            .enumerate()
+            .max_by(|(_, value0), (_, value1)| value0.cmp(value1))
+            .map(|(idx, _)| idx)
+            .unwrap() as u32;
         match payouts.iter().sum::<u128>() {
             s if (s == market.collateral_decimals as u128) => {
                 // usual case, resolve the market
                 market.payouts = Some(payouts);
-                market.stage = Stage::Finalized(Finalization::Resolved);
+                market.stage = Stage::Finalized(Finalization::Resolved { outcome_id });
             }
             0 => {
                 // no payouts --> the outcomes were invalid, put market in refund mode
@@ -92,10 +100,16 @@ impl Contract {
         amount: Balance,
         ix: instructions::Buy,
     ) -> PromiseOrValue<U128> {
+        log!(
+            "buy: sender_id: {} token_id: {} amount: {}",
+            sender_id,
+            token_id,
+            amount
+        );
         let mut market = self.get_market(ix.market_id.into());
         assert_eq!(market.collateral_token, *token_id);
 
-        let ret = market.internal_buy(&sender_id, amount, ix.num_shares, ix.outcome_id);
+        let ret = market.internal_buy(&sender_id, amount, ix.num_shares as u128, ix.outcome_id);
         self.markets.replace(market.id, &market);
 
         ret
@@ -103,15 +117,17 @@ impl Contract {
 
     pub fn sell(
         &mut self,
-        sender_id: &AccountId,
         token_id: &AccountId,
         amount: Balance,
-        ix: instructions::Sell,
+        market_id: u64,
+        outcome_id: u32,
+        num_shares: u64,
     ) {
-        let mut market = self.get_market(ix.market_id.into());
+        let mut market = self.get_market(market_id);
         assert_eq!(market.collateral_token, *token_id);
+        let seller_id = env::signer_account_id();
 
-        market.internal_sell(&sender_id, amount, ix.num_shares, ix.outcome_id);
+        market.internal_sell(&seller_id, amount, num_shares as u128, outcome_id);
         self.markets.replace(market.id, &market);
     }
 
@@ -143,7 +159,12 @@ impl Contract {
 
 #[cfg(test)]
 mod tests {
+    use crate::instructions::{Buy, InitialDeposit, Instruction};
+    use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
+    use std::convert::TryFrom;
+
     use super::*;
+    use near_sdk::json_types::ValidAccountId;
     use near_sdk::MockedBlockchain;
     use near_sdk::{testing_env, VMContext};
 
@@ -194,6 +215,7 @@ mod tests {
                     long_name: "Test".into(),
                 })
                 .collect(),
+            liquidity: Some(50.0),
         }
     }
 
@@ -264,5 +286,44 @@ mod tests {
         let min_sell_price = market.calc_sell_price(1, 100) / 100;
         assert!(min_sell_price < mid_sell_price);
         assert!(mid_sell_price < max_sell_price);
+    }
+
+    #[test]
+    fn test_ft_on_transfer_buy() {
+        let context = get_context(vec![], false);
+        testing_env!(context);
+        let mut contract = Contract {
+            markets: Vector::new(b"mk".to_vec()),
+        };
+        let args = create_test_market(2);
+        let market_id = contract.create_market(args);
+        let account_id: AccountId = "alice.testnet".into();
+        let token_id: AccountId = "test.near".into();
+        contract.deposit(
+            &account_id,
+            &token_id,
+            100 * 1_000_000_000,
+            InitialDeposit { market_id },
+        );
+        contract.open_market(market_id);
+        contract.buy(
+            &account_id,
+            &token_id,
+            3 * 1_000_000_000,
+            Buy {
+                market_id: market_id,
+                outcome_id: 0,
+                num_shares: 5,
+            },
+        );
+        let balances = contract.get_user_balances(&account_id);
+        assert!(balances.len() > 0);
+        assert_eq!(balances[0].shares, 5);
+        assert_eq!(balances[0].market_id, market_id);
+        assert_eq!(balances[0].outcome_id, 0);
+
+        contract.sell(&token_id, 1, market_id, 0, 1);
+        let new_balances = contract.get_user_balances(&account_id);
+        assert_eq!(new_balances[0].shares, 4);
     }
 }

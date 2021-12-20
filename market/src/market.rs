@@ -5,14 +5,15 @@ use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::collections::{LookupMap, Vector};
 use near_sdk::json_types::U128;
 use near_sdk::serde::{Deserialize, Serialize};
-use near_sdk::{env, AccountId, Balance, Promise, PromiseOrValue};
+use near_sdk::{env, log, AccountId, Balance, Promise, PromiseOrValue};
 
 use crate::constants::*;
 use crate::lmsr;
 
 pub type Timestamp = u64;
 
-#[derive(Debug, PartialEq, BorshDeserialize, BorshSerialize)]
+#[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub enum Stage {
     /// The market has never been opened.
     Pending,
@@ -24,9 +25,10 @@ pub enum Stage {
     Finalized(Finalization),
 }
 
-#[derive(Debug, PartialEq, BorshDeserialize, BorshSerialize)]
+#[derive(Clone, Debug, PartialEq, BorshDeserialize, BorshSerialize, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
 pub enum Finalization {
-    Resolved,
+    Resolved { outcome_id: OutcomeId },
     Invalid,
 }
 
@@ -57,6 +59,7 @@ pub struct Market {
     pub resolution_time: Timestamp,
 
     pub outcomes: Vector<Outcome>,
+    pub liquidity: f64,
     /// Number of outstanding shares per outcome
     pub shares: Vec<f64>,
     /// Payout weights. For a valid market, weights must sum to 1 of the
@@ -101,6 +104,7 @@ pub struct CreateMarketArgs {
     pub trade_fee_bps: u16,
 
     pub outcomes: Vec<Outcome>,
+    pub liquidity: Option<f64>,
 
     pub fee_owner: Option<AccountId>,
     pub operator: Option<AccountId>,
@@ -114,7 +118,7 @@ pub enum OrderDirection {
 
 impl Market {
     pub fn new(id: u64, args: CreateMarketArgs) -> Self {
-        let mut outcomes = Vector::new(b"outcomes".to_vec());
+        let mut outcomes = Vector::new(format!("outcomes{}", id).as_bytes().to_vec());
         outcomes.extend(args.outcomes);
 
         let creator = env::signer_account_id();
@@ -136,12 +140,16 @@ impl Market {
             stage: Stage::Pending,
 
             // TODO(sbb): append something market specific to key
-            accounts: LookupMap::new(b"acc_map".to_vec()),
+            accounts: LookupMap::new(format!("accmap{}", id).as_bytes().to_vec()),
             collateral_token: args.collateral_token,
             collateral_decimals: args.collateral_decimals,
             deposited_collateral: 0,
             minimum_deposit: MINIMUM_DEPOSIT * (10 as u128).pow(args.collateral_decimals),
 
+            liquidity: match args.liquidity {
+                None => DEFAULT_LIQUIDITY,
+                Some(l) => l,
+            },
             trade_fee_bps: args.trade_fee_bps,
             fees_accrued: 0,
             volume: 0,
@@ -182,6 +190,13 @@ impl Market {
         base_price.checked_add(fee).unwrap()
     }
 
+    pub fn calculate_prices(&self) -> Vec<f64> {
+        return lmsr::compute_price(self.liquidity, &self.shares)
+            .iter()
+            .map(|x| (x * 100.0))
+            .collect();
+    }
+
     pub fn calc_price_without_fee(
         &self,
         outcome_id: OutcomeId,
@@ -194,7 +209,7 @@ impl Market {
         };
         // e.g. 5.2493 (average 0.52 per share for uninitialized market)
         let estimate = lmsr::estimate(
-            50.0,
+            self.liquidity,
             &self.shares,
             outcome_id.try_into().unwrap(),
             multiplier * (num_shares as f64),
@@ -202,21 +217,27 @@ impl Market {
         .abs();
 
         // 5.24 * 10 -> 52.4 -> 53 for buy, 52 for sell
+        let multiplier = (10.0 as f64).powi(ROUNDING_DECIMALS as i32);
         let rounded = match direction {
-            OrderDirection::Buy => (estimate * 10.0).ceil() as u128,
-            OrderDirection::Sell => (estimate * 10.0).floor() as u128,
+            OrderDirection::Buy => (estimate * multiplier).ceil() as u128,
+            OrderDirection::Sell => (estimate * multiplier).floor() as u128,
         };
         let base: u128 = 10;
         // Multiplied by 10 above so exponent should be 1 less
-        let total = rounded * base.checked_pow(self.collateral_decimals - 1).unwrap();
+        let total = rounded
+            * base
+                .checked_pow(self.collateral_decimals - ROUNDING_DECIMALS)
+                .unwrap();
         return total;
     }
 
     pub fn calc_fee(&self, base_price: Balance) -> Balance {
         base_price
-            .checked_mul(self.trade_fee_bps.into())
+            .checked_div(100)
             .unwrap()
-            .checked_div(self.collateral_decimals.into())
+            .checked_mul(self.trade_fee_bps.into())
+            // .unwrap()
+            // .checked_div(self.collateral_decimals.into())
             .unwrap()
     }
 
@@ -286,6 +307,7 @@ impl Market {
         let mut balances = self.get_or_create_balances(&account_id);
         balances[outcome_id as usize] += num_shares;
         self.accounts.insert(&account_id, &balances);
+        self.shares[outcome_id as usize] += num_shares as f64;
     }
 
     pub fn debit(&mut self, account_id: &AccountId, outcome_id: OutcomeId, num_shares: Balance) {
@@ -297,6 +319,7 @@ impl Market {
             old => old - num_shares,
         };
         balances[outcome_id as usize] = new_balance;
+        self.shares[outcome_id as usize] -= num_shares as f64;
 
         self.accounts.insert(&account_id, &balances);
     }
@@ -326,17 +349,27 @@ impl Market {
     ) -> ReceiverResponse {
         self.assert_trading_allowed();
         assert!(self.outcomes.len() > outcome_id.into());
+        log!("internal_buy: trading allowed",);
 
         let base_price = self.calc_price_without_fee(outcome_id, num_shares, OrderDirection::Buy);
         let fee = self.calc_fee(base_price);
         let cost = base_price.checked_add(fee).unwrap();
+        log!(
+            "internal_buy: base_price: {} fee: {} cost: {}",
+            base_price,
+            fee,
+            cost
+        );
         if amount < cost {
+            panic!("Not enough for purchase!");
             // not enough collateral for this buy, cancel the whole thing
             return PromiseOrValue::Value(U128(amount));
         }
         // credit the user outcome share balance and return excess collateral
         self.credit(sender_id, outcome_id, num_shares);
+        log!("internal_buy: credit complete");
         self.deposit_fees(fee);
+        log!("internal_buy: fee deposit complete");
         return PromiseOrValue::Value(U128(amount - cost));
     }
 
@@ -352,6 +385,14 @@ impl Market {
 
         let base_price = self.calc_price_without_fee(outcome_id, num_shares, OrderDirection::Sell);
         let fee = self.calc_fee(base_price);
+        log!(
+            "{} selling {} shares for outcome id {}, base price {} fee {}",
+            sender_id,
+            num_shares,
+            outcome_id,
+            base_price,
+            fee
+        );
         let sell_amount = base_price.checked_sub(fee).unwrap();
         if sell_amount < amount {
             panic!("Not executing transaction due to slippage");
@@ -380,9 +421,10 @@ impl Market {
         assert!(self.outcomes.len() > 0);
         assert!(self.end_time > env::block_timestamp());
         assert!(self.resolution_time > env::block_timestamp());
-        println!(
+        log!(
             "deposited: {} min: {}",
-            self.deposited_collateral, self.minimum_deposit
+            self.deposited_collateral,
+            self.minimum_deposit
         );
         assert!(self.deposited_collateral >= self.minimum_deposit);
     }
@@ -392,7 +434,7 @@ impl Market {
     }
 
     fn assert_stage(&self, stage: Stage) {
-        self.assert_stages(&[stage]);
+        assert_eq!(self.stage, stage);
     }
 
     fn assert_trading_allowed(&self) {
@@ -401,9 +443,9 @@ impl Market {
     }
 
     fn assert_finalized(&self) {
-        self.assert_stages(&[
-            Stage::Finalized(Finalization::Resolved),
-            Stage::Finalized(Finalization::Invalid),
-        ])
+        assert!(match &self.stage {
+            Stage::Finalized(_) => true,
+            _ => false,
+        });
     }
 }
