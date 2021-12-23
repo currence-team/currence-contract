@@ -5,7 +5,7 @@ use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::collections::{LookupMap, Vector};
 use near_sdk::json_types::U128;
 use near_sdk::serde::{Deserialize, Serialize};
-use near_sdk::{env, AccountId, Balance, Promise, PromiseOrValue};
+use near_sdk::{env, log, AccountId, Balance, Promise, PromiseOrValue};
 
 use crate::constants::*;
 use crate::lmsr;
@@ -118,7 +118,7 @@ pub enum OrderDirection {
 
 impl Market {
     pub fn new(id: u64, args: CreateMarketArgs) -> Self {
-        let mut outcomes = Vector::new(b"outcomes".to_vec());
+        let mut outcomes = Vector::new(format!("outcomes{}", id).as_bytes().to_vec());
         outcomes.extend(args.outcomes);
 
         let creator = env::signer_account_id();
@@ -140,7 +140,7 @@ impl Market {
             stage: Stage::Pending,
 
             // TODO(sbb): append something market specific to key
-            accounts: LookupMap::new(b"acc_map".to_vec()),
+            accounts: LookupMap::new(format!("accmap{}", id).as_bytes().to_vec()),
             collateral_token: args.collateral_token,
             collateral_decimals: args.collateral_decimals,
             deposited_collateral: 0,
@@ -341,17 +341,27 @@ impl Market {
     ) -> ReceiverResponse {
         self.assert_trading_allowed();
         assert!(self.outcomes.len() > outcome_id.into());
+        log!("internal_buy: trading allowed",);
 
         let base_price = self.calc_price_without_fee(outcome_id, num_shares, OrderDirection::Buy);
         let fee = self.calc_fee(base_price);
         let cost = base_price.checked_add(fee).unwrap();
+        log!(
+            "internal_buy: base_price: {} fee: {} cost: {}",
+            base_price,
+            fee,
+            cost
+        );
         if amount < cost {
+            panic!("Not enough for purchase!");
             // not enough collateral for this buy, cancel the whole thing
             return PromiseOrValue::Value(U128(amount));
         }
         // credit the user outcome share balance and return excess collateral
         self.credit(sender_id, outcome_id, num_shares);
+        log!("internal_buy: credit complete");
         self.deposit_fees(fee);
+        log!("internal_buy: fee deposit complete");
         return PromiseOrValue::Value(U128(amount - cost));
     }
 
@@ -395,9 +405,10 @@ impl Market {
         assert!(self.outcomes.len() > 0);
         assert!(self.end_time > env::block_timestamp());
         assert!(self.resolution_time > env::block_timestamp());
-        println!(
+        log!(
             "deposited: {} min: {}",
-            self.deposited_collateral, self.minimum_deposit
+            self.deposited_collateral,
+            self.minimum_deposit
         );
         assert!(self.deposited_collateral >= self.minimum_deposit);
     }
@@ -407,7 +418,7 @@ impl Market {
     }
 
     fn assert_stage(&self, stage: Stage) {
-        self.assert_stages(&[stage]);
+        assert_eq!(self.stage, stage);
     }
 
     fn assert_trading_allowed(&self) {

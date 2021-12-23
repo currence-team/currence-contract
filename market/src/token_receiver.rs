@@ -1,6 +1,6 @@
 use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
 use near_sdk::json_types::{ValidAccountId, U128};
-use near_sdk::{serde_json, PromiseOrValue};
+use near_sdk::{log, serde_json, PromiseOrValue};
 
 use crate::instructions::*;
 use crate::*;
@@ -16,7 +16,6 @@ impl FungibleTokenReceiver for Contract {
         let sender: AccountId = sender_id.into();
         let amount: u128 = amount.into();
         let token_id = env::predecessor_account_id();
-
         let message = serde_json::from_str::<Instruction>(&msg).expect(errors::INVALID_MESSAGE);
         match message {
             Instruction::Buy(ix) => self.buy(&sender, &token_id, amount, ix),

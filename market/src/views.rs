@@ -86,6 +86,7 @@ impl Market {
                     outcome_id: idx as u32,
                     shares: *balance,
                 })
+                .filter(|m| m.shares > 0)
                 .collect(),
         }
     }

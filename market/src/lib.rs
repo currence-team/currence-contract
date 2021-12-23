@@ -1,7 +1,7 @@
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::collections::Vector;
 use near_sdk::json_types::U128;
-use near_sdk::{env, near_bindgen, AccountId, Balance, Promise, PromiseOrValue};
+use near_sdk::{env, log, near_bindgen, serde_json, AccountId, Balance, Promise, PromiseOrValue};
 
 use crate::market::*;
 
@@ -100,10 +100,16 @@ impl Contract {
         amount: Balance,
         ix: instructions::Buy,
     ) -> PromiseOrValue<U128> {
+        log!(
+            "buy: sender_id: {} token_id: {} amount: {}",
+            sender_id,
+            token_id,
+            amount
+        );
         let mut market = self.get_market(ix.market_id.into());
         assert_eq!(market.collateral_token, *token_id);
 
-        let ret = market.internal_buy(&sender_id, amount, ix.num_shares, ix.outcome_id);
+        let ret = market.internal_buy(&sender_id, amount, ix.num_shares as u128, ix.outcome_id);
         self.markets.replace(market.id, &market);
 
         ret
@@ -119,7 +125,7 @@ impl Contract {
         let mut market = self.get_market(ix.market_id.into());
         assert_eq!(market.collateral_token, *token_id);
 
-        market.internal_sell(&sender_id, amount, ix.num_shares, ix.outcome_id);
+        market.internal_sell(&sender_id, amount, ix.num_shares as u128, ix.outcome_id);
         self.markets.replace(market.id, &market);
     }
 
@@ -151,7 +157,12 @@ impl Contract {
 
 #[cfg(test)]
 mod tests {
+    use crate::instructions::{Buy, InitialDeposit, Instruction};
+    use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
+    use std::convert::TryFrom;
+
     use super::*;
+    use near_sdk::json_types::ValidAccountId;
     use near_sdk::MockedBlockchain;
     use near_sdk::{testing_env, VMContext};
 
@@ -202,6 +213,7 @@ mod tests {
                     long_name: "Test".into(),
                 })
                 .collect(),
+            liquidity: Some(50.0),
         }
     }
 
@@ -272,5 +284,40 @@ mod tests {
         let min_sell_price = market.calc_sell_price(1, 100) / 100;
         assert!(min_sell_price < mid_sell_price);
         assert!(mid_sell_price < max_sell_price);
+    }
+
+    #[test]
+    fn test_ft_on_transfer_buy() {
+        let context = get_context(vec![], false);
+        testing_env!(context);
+        let mut contract = Contract {
+            markets: Vector::new(b"mk".to_vec()),
+        };
+        let args = create_test_market(2);
+        let market_id = contract.create_market(args);
+        let account_id: AccountId = "test_account".into();
+        let token_id: AccountId = "test.near".into();
+        let deposit_result = contract.deposit(
+            &account_id,
+            &token_id,
+            100 * 1_000_000_000,
+            InitialDeposit { market_id },
+        );
+        contract.open_market(market_id);
+        contract.buy(
+            &account_id,
+            &token_id,
+            3 * 1_000_000_000,
+            Buy {
+                market_id: market_id,
+                outcome_id: 0,
+                num_shares: 5,
+            },
+        );
+        let balances = contract.get_user_balances(account_id.into());
+        assert!(balances.len() > 0);
+        assert_eq!(balances[0].shares, 5);
+        assert_eq!(balances[0].market_id, market_id);
+        assert_eq!(balances[0].outcome_id, 0);
     }
 }
