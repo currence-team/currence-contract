@@ -217,21 +217,27 @@ impl Market {
         .abs();
 
         // 5.24 * 10 -> 52.4 -> 53 for buy, 52 for sell
+        let multiplier = (10.0 as f64).powi(ROUNDING_DECIMALS as i32);
         let rounded = match direction {
-            OrderDirection::Buy => (estimate * 10.0).ceil() as u128,
-            OrderDirection::Sell => (estimate * 10.0).floor() as u128,
+            OrderDirection::Buy => (estimate * multiplier).ceil() as u128,
+            OrderDirection::Sell => (estimate * multiplier).floor() as u128,
         };
         let base: u128 = 10;
         // Multiplied by 10 above so exponent should be 1 less
-        let total = rounded * base.checked_pow(self.collateral_decimals - 1).unwrap();
+        let total = rounded
+            * base
+                .checked_pow(self.collateral_decimals - ROUNDING_DECIMALS)
+                .unwrap();
         return total;
     }
 
     pub fn calc_fee(&self, base_price: Balance) -> Balance {
         base_price
-            .checked_mul(self.trade_fee_bps.into())
+            .checked_div(100)
             .unwrap()
-            .checked_div(self.collateral_decimals.into())
+            .checked_mul(self.trade_fee_bps.into())
+            // .unwrap()
+            // .checked_div(self.collateral_decimals.into())
             .unwrap()
     }
 
@@ -377,6 +383,14 @@ impl Market {
 
         let base_price = self.calc_price_without_fee(outcome_id, num_shares, OrderDirection::Sell);
         let fee = self.calc_fee(base_price);
+        log!(
+            "{} selling {} shares for outcome id {}, base price {} fee {}",
+            sender_id,
+            num_shares,
+            outcome_id,
+            base_price,
+            fee
+        );
         let sell_amount = base_price.checked_sub(fee).unwrap();
         if sell_amount < amount {
             panic!("Not executing transaction due to slippage");

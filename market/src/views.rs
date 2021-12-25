@@ -94,16 +94,16 @@ impl Market {
 
 #[near_bindgen]
 impl Contract {
-    pub fn get_market_info(self, market_id: u64) -> MarketView {
+    pub fn get_market_info(&self, market_id: u64) -> MarketView {
         let market = self.markets.get(market_id).unwrap();
         return market.into_view();
     }
 
-    pub fn get_all_markets(self) -> Vec<MarketView> {
+    pub fn get_all_markets(&self) -> Vec<MarketView> {
         return self.markets.iter().map(|m| m.into_view()).collect();
     }
 
-    pub fn get_user_balances(self, account_id: AccountId) -> Vec<BalanceView> {
+    pub fn get_user_balances(&self, account_id: &AccountId) -> Vec<BalanceView> {
         return self
             .markets
             .iter()

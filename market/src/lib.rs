@@ -117,15 +117,17 @@ impl Contract {
 
     pub fn sell(
         &mut self,
-        sender_id: &AccountId,
         token_id: &AccountId,
         amount: Balance,
-        ix: instructions::Sell,
+        market_id: u64,
+        outcome_id: u32,
+        num_shares: u64,
     ) {
-        let mut market = self.get_market(ix.market_id.into());
+        let mut market = self.get_market(market_id);
         assert_eq!(market.collateral_token, *token_id);
+        let seller_id = env::signer_account_id();
 
-        market.internal_sell(&sender_id, amount, ix.num_shares as u128, ix.outcome_id);
+        market.internal_sell(&seller_id, amount, num_shares as u128, outcome_id);
         self.markets.replace(market.id, &market);
     }
 
@@ -295,9 +297,9 @@ mod tests {
         };
         let args = create_test_market(2);
         let market_id = contract.create_market(args);
-        let account_id: AccountId = "test_account".into();
+        let account_id: AccountId = "alice.testnet".into();
         let token_id: AccountId = "test.near".into();
-        let deposit_result = contract.deposit(
+        contract.deposit(
             &account_id,
             &token_id,
             100 * 1_000_000_000,
@@ -314,10 +316,14 @@ mod tests {
                 num_shares: 5,
             },
         );
-        let balances = contract.get_user_balances(account_id.into());
+        let balances = contract.get_user_balances(&account_id);
         assert!(balances.len() > 0);
         assert_eq!(balances[0].shares, 5);
         assert_eq!(balances[0].market_id, market_id);
         assert_eq!(balances[0].outcome_id, 0);
+
+        contract.sell(&token_id, 1, market_id, 0, 1);
+        let new_balances = contract.get_user_balances(&account_id);
+        assert_eq!(new_balances[0].shares, 4);
     }
 }
